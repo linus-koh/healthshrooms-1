@@ -1,0 +1,192 @@
+import telebot
+import sqlite3
+from calories import *
+from mealplannnn import *
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+# Use your provided API key securely
+API_KEY = "7954917621:AAEUxDwyimCq8jntMbeKeMC-jgQXyCae_WQ"
+bot = telebot.TeleBot(API_KEY)
+user_data = {}
+
+# Start conversation and greet
+@bot.message_handler(commands=['start', 'begin'])
+def start_conversation(message):
+    user_id = message.chat.id
+    user_data[user_id] = {}  # Initialize user data for this user
+    bot.send_photo(user_id, photo=open('Image.webp', 'rb'))
+    bot.send_message(user_id, "Welcome! Let's get started 🍄 What's your Telegram username?")
+    bot.register_next_step_handler(message, check_username)
+
+def check_username(message):
+    user_id = message.chat.id
+    username = message.text
+    user_data[user_id]['name'] = username  # Save username
+
+    # Check if the username exists in the database
+    db = sqlite3.connect("HealthShroom.db")
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM ShroomDB WHERE Username=?", (username,))
+    existing_user = cursor.fetchone()
+    db.close()
+
+    if existing_user:
+        # If the username exists, ask if the user wants to update their information
+        bot.send_message(user_id, f"Username {username} already exists. Would you like to update your information?")
+        # Create buttons for 'Yes' and 'No'
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton("Yes", callback_data="update_yes"),
+                     InlineKeyboardButton("No", callback_data="update_no"))
+        bot.send_message(user_id, "Would you like to update your information?", reply_markup=keyboard)
+    else:
+        # If the username does not exist, proceed to ask gender
+        bot.send_message(user_id, f"Nice to meet you, {username}! What's your gender?")
+        bot.register_next_step_handler(message, ask_gender)
+
+@bot.callback_query_handler(func=lambda call: call.data in ["update_yes", "update_no"])
+def handle_update_response(call):
+    user_id = call.message.chat.id
+
+    if call.data == "update_yes":
+        # Delete the old username's data and treat as a new user
+        username = user_data[user_id]['name']
+        db = sqlite3.connect("HealthShroom.db")
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM ShroomDB WHERE Username=?", (username,))
+        db.commit()
+        db.close()
+
+        # Proceed with the regular flow (ask gender)
+        bot.send_message(user_id, "Let's get started! What's your gender?")
+        bot.register_next_step_handler(call.message, ask_gender)
+
+    elif call.data == "update_no":
+        # If the user doesn't want to update, end the process or proceed
+        bot.send_message(user_id, "Okay, we won't update your information. You can contact support if you change your mind.")
+        recommend_food(user_id)
+
+    # Remove inline keyboard after the response
+    bot.edit_message_reply_markup(chat_id=user_id, message_id=call.message.message_id, reply_markup=None)
+
+def ask_gender(message):
+    user_id = message.chat.id
+    user_data[user_id]['gender'] = message.text
+    bot.send_message(message.chat.id, "How old are you?")
+    bot.register_next_step_handler(message, ask_age)
+
+def ask_age(message):
+    user_id = message.chat.id
+    user_data[user_id]['age'] = message.text
+    bot.send_message(message.chat.id, "What's your current weight in kilograms?")
+    bot.register_next_step_handler(message, ask_current_weight)
+
+def ask_current_weight(message):
+    try:
+        user_id = message.chat.id
+        user_data[user_id]['current_weight'] = int(message.text)
+        bot.send_message(message.chat.id, "What's your goal weight in kilograms?")
+        bot.register_next_step_handler(message, ask_goal_weight)
+    except ValueError:
+        bot.send_message(message.chat.id, "Please enter a valid age.")
+        bot.register_next_step_handler(message, ask_age)
+
+def ask_goal_weight(message):
+    try:
+        user_id = message.chat.id
+        user_data[user_id]['goal_weight'] = float(message.text)
+        bot.send_message(message.chat.id, "In how many months would you like to achieve this goal?")
+        bot.register_next_step_handler(message, ask_time_period)
+    except ValueError:
+        bot.send_message(message.chat.id, "Please enter a valid weight.")
+        bot.register_next_step_handler(message, ask_current_weight)
+
+def ask_time_period(message):
+    try:
+        user_id = message.chat.id
+        user_data[user_id]['time'] = float(message.text)
+        bot.send_message(message.chat.id, "What is your height?")
+        bot.register_next_step_handler(message, summary)
+    except ValueError:
+        bot.send_message(message.chat.id, "Please enter a valid weight.")
+        bot.register_next_step_handler(message, ask_goal_weight)
+
+def summary(message):
+    user_id = message.chat.id
+    user_data[user_id]['Height'] = message.text
+    # Retrieve and display the full summary
+    user_info = user_data[user_id]
+    summary_text = (f"Here is your profile:\n"
+                    f"Username: {user_info['name']}\n"
+                    f"Gender: {user_info['gender']}\n"
+                    f"Age: {user_info['age']}\n"
+                    f"Current Weight: {user_info['current_weight']} kg\n"
+                    f"Goal Weight: {user_info['goal_weight']} kg\n"
+                    f"Time Period: {user_info['time']} months\n"
+                    f"Height: {user_info['Height']} cm\n")
+    bot.send_message(user_id, summary_text)
+
+    db = sqlite3.connect("HealthShroom.db")
+    cursor = db.cursor()
+
+    cursor.execute('''
+    INSERT INTO "ShroomDB" (Username, Gender, Age, "Current Weight", "Goal Weight", "Time Period (Months)", Height)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (user_info['name'], user_info['gender'], user_info['age'], user_info['current_weight'], user_info['goal_weight'], user_info['time'], user_info['Height']))
+
+    db.commit()
+    db.close()
+
+    # Ask for confirmation
+    send_confirmation_message(bot, user_id)
+
+def send_confirmation_message(bot, user_id):
+    # Define the buttons
+    keyboard = [
+        [InlineKeyboardButton("Yes", callback_data="confirm_yes"),
+         InlineKeyboardButton("No", callback_data="confirm_no")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Send the message with buttons
+    bot.send_message(
+        chat_id=user_id,
+        text="Is this information correct?",
+        reply_markup=reply_markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data in ["confirm_yes", "confirm_no"])
+def handle_confirmation(call):
+    user_id = call.message.chat.id
+
+    if call.data == "confirm_yes":
+        bot.send_message(user_id, "Great! Let's move on to recommend some food options.")
+        recommend_food(user_id)
+
+    elif call.data == "confirm_no":
+        bot.send_message(user_id, "Okay, let's restart. Please type /start to begin again.")
+
+    # Remove inline keyboard after the response
+    bot.edit_message_reply_markup(chat_id=user_id, message_id=call.message.message_id, reply_markup=None)
+
+def recommend_food(user_id):
+    db = sqlite3.connect("HealthShroom.db")
+    cursor = db.cursor()
+    cursor.execute('''
+    SELECT Age, "Current Weight", Height, Gender, "Goal Weight", "Time Period (Months)"
+    FROM ShroomDB
+    WHERE Username = ?''', (user_data[user_id]['name'],))
+
+    user_info = cursor.fetchone()
+    db.close()
+
+    age, weight, height, gender, gweight, time = user_info
+
+    calorie_plan = calculate_calories_per_meal(age, weight, height, gender, gweight, time)  # Dictionary
+
+    plan = generate_meal_plan("Food.csv", calorie_plan["Breakfast"], calorie_plan["Lunch"], calorie_plan["Dinner"])
+
+    bot.send_message(user_id, "Here are your recommended food options:")
+    bot.send_message(user_id, f'Breakfast - {plan["Breakfast"]}\nLunch - {plan["Lunch"]}\nDinner - {plan["Dinner"]}\n\nTotal Calories: {plan["Total Calories"]}')
+
+# Start polling
+bot.polling()
